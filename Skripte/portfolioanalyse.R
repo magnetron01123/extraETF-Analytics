@@ -5,6 +5,7 @@ library(tidyquant)
 
 library(janitor)
 
+# Diagramme
 library(scales)
 library(patchwork)
 
@@ -59,7 +60,7 @@ transaktionen_bereinigt <-
       -anzahl, 
       anzahl
     ),
-    buchwert = -anzahl * kurs
+    buchwert = -anzahl * kurs,
   ) |> 
   arrange(desc(datum))
 
@@ -120,7 +121,6 @@ print(gewinne)
 
 diagramme <- list()
 
-
 # Trades
 
 diagramme$trades <-
@@ -159,10 +159,9 @@ diagramme$trades <-
     yintercept = 0
   ) +
   geom_smooth(
-    aes(
-      y = if_else(buchwert > 0, buchwert, NA)
-    ),
-    method = "lm",
+    aes(y = if_else(buchwert > 0, buchwert, NA)),  # Nur positive Werte verwenden
+    method = "glm", 
+    method.args = list(family = Gamma(link = "log")),  # Gamma-Regression für positive Linie
     se = FALSE,
     color = "black",
     linetype = "dashed",
@@ -191,23 +190,22 @@ diagramme$trades <-
     ncol = 1
   ) +
   theme(
+    plot.title.position = "plot",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title.x = element_blank(),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.justification = "center",
+    strip.text = element_text(hjust = 0),
+    strip.background = element_blank(),
     panel.grid = element_blank(),
     panel.border = element_rect(
       color = "black", 
       fill = NA, 
       linewidth = 1
-    ),
-    plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5),
-    plot.title.position = "plot",
-    axis.title.x = element_blank(),
-    legend.position = "bottom",
-    legend.direction = "horizontal",
-    legend.justification = "center",
-    strip.background = element_blank(),
-    strip.text = element_text(hjust = 0)
+    )
   )
-
 
 # Gewinne und Verluste
 
@@ -300,18 +298,18 @@ diagramme$gewinne <-
   ) +
   theme_classic() +
   theme(
+    plot.title.position = "plot",
     plot.title = element_text(hjust = 0.5),
     plot.subtitle = element_text(hjust = 0.5),
-    plot.title.position = "plot",
     legend.position = "none",
     axis.line.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
     axis.line.x = element_line(
       arrow = arrow(length = unit(0.5, "npc"), type = "closed", ends = "both"),
       color = "black"
     ),
-    axis.ticks.y = element_blank(),
-    axis.text.y = element_blank(),
-    axis.title.y = element_blank(),
     panel.grid.major.y = element_blank(),
     panel.grid.minor.y = element_blank()
   )
