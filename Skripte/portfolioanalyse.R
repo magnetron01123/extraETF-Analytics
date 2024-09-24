@@ -197,7 +197,7 @@ diagramme$trades <-
     legend.position = "bottom",
     legend.direction = "horizontal",
     legend.justification = "center",
-    strip.text = element_text(hjust = 0),
+    strip.text = element_text(hjust = 0.5),
     strip.background = element_blank(),
     panel.grid = element_blank(),
     panel.border = element_rect(
