@@ -19,6 +19,8 @@ pfad_diagramme <- file.path(getwd(), "Diagramme")
 
 # Import ------------------------------------------------------------------
 
+# Transaktionen aus dem Portfolio
+
 transaktionen_rohdaten <- 
   list.files(
     pfad_datensatz,
@@ -37,6 +39,45 @@ transaktionen_rohdaten <-
 
 glimpse(transaktionen_rohdaten)
 
+# Mapping zwischen ISIN und Symbol
+
+mapping <-
+  tibble(
+    isin = c(
+      "IE00B4L5Y983", 
+      "IE00BF4RFH31",
+      "IE00BKM4GZ66",
+      "LU2572257124"
+    ),
+    tickersymbol = c(
+      "EUNL", 
+      "IUSN",
+      "IS3N",
+      "AHYQ"
+    )
+  ) |> 
+  mutate(tickersymbol = paste0(tickersymbol, ".DE"))
+
+# Marktpreise importieren
+
+marktpreise <-
+  tq_get(mapping$tickersymbol, get = "stock.prices") |> 
+  left_join(
+    mapping,
+    join_by("symbol" == "tickersymbol")
+  ) |> 
+  rename(
+    tickersymbol = symbol,
+    datum = date,
+    eroeffnungskurs = open,
+    hoechstkurs = high,
+    tiefstkurs = low,
+    schlusskurs = close,
+    handelsvolumen = volume,
+    bereingter_schlusskurs = adjusted
+  )
+
+glimpse(marktpreise)
 
 # Datenbereinigung --------------------------------------------------------
 
@@ -45,22 +86,24 @@ transaktionen_bereinigt <-
   distinct() |> 
   clean_names() |> 
   rename(
+    kaufkurs = kurs,
     kosten = kommission,
     waehrung = wahrung
-  ) |> 
-  select(
-    -portfolio_id,
-    -quote_provider,
-    -wechselkurs
   ) |> 
   mutate(
     datum = dmy(datum),
     anzahl = if_else(
-      transaktionsart %in% c("Verkauf"), 
+      transaktionsart == "Verkauf", 
       -anzahl, 
       anzahl
     ),
-    buchwert = -anzahl * kurs,
+    buchwert = -anzahl * kaufkurs,
+  ) |> 
+  left_join(mapping) |> 
+  select(
+    -portfolio_id,
+    -quote_provider,
+    -wechselkurs
   ) |> 
   arrange(desc(datum))
 
@@ -74,47 +117,111 @@ View(transaktionen_bereinigt)
 
 aktuelles_portfolio <-
   transaktionen_bereinigt |> 
-  group_by(isin) |> 
+  group_by(portfolioname, tickersymbol, isin, name, wertpapiertyp) |> 
   summarise(
-    name = first(name),
-    wertpapiertyp = first(wertpapiertyp),
-    stueck = sum(if_else(transaktionsart %in% c("Kauf", "Verkauf"), anzahl, 0)),
+    stueck = sum(
+      if_else(
+        transaktionsart %in% c("Kauf", "Verkauf", "Einbuchung"),
+        anzahl, 
+        0
+      )
+    ),
     kosten = sum(kosten),
     steuern = sum(steuern),
-    kaufwert = -sum(buchwert)
+    kaufwert = abs(sum(buchwert)),
+    .groups = "drop"
   ) |> 
-  filter(stueck > 0)
+  filter(stueck > 0) |> 
+  left_join(filter(marktpreise, datum == max(datum))) |> 
+  mutate(
+    marktwert = stueck * bereingter_schlusskurs,
+    gewinn = marktwert - kaufwert - steuern - kosten,
+    rendite = gewinn / (kaufwert + kosten + steuern)
+  ) |> 
+  select(
+    portfolioname,
+    tickersymbol,
+    isin,
+    name,
+    wertpapiertyp,
+    marktwert,
+    gewinn,
+    rendite
+  )
 
 print(aktuelles_portfolio)
 
-# Kosten
+# Gewinne
 
-gewinne <-
+performance <-
   transaktionen_bereinigt |>
-  group_by(isin, name) |>
+  group_by(portfolioname, tickersymbol, isin, name, wertpapiertyp) |>
   summarise(
-    bestand = max(sum(if_else(transaktionsart %in% c("Kauf", "Verkauf"), anzahl, 0)), 0),
-    stueck = sum(if_else(transaktionsart == "Kauf", anzahl, 0)),
-    kaufwert = sum(if_else(transaktionsart == "Kauf", -buchwert, 0)),
-    verkaufswert = sum(if_else(transaktionsart == "Verkauf", buchwert, 0)),
+    bestand = max(
+      sum(if_else(
+        transaktionsart %in% c("Kauf", "Verkauf"), 
+        anzahl, 
+        0)
+      ), 
+    0),
+    stueck = sum(
+      if_else(
+        transaktionsart == "Kauf", 
+        anzahl, 
+        0
+      )
+    ),
+    kaufwert = sum(
+      if_else(
+        transaktionsart == "Kauf", 
+        abs(buchwert), 
+        0
+      )
+    ),
+    verkaufswert = sum(
+      if_else(
+        transaktionsart == "Verkauf", 
+        buchwert, 
+        0
+      )
+    ),
     kosten = sum(kosten),
     steuern = sum(steuern),
     .groups = "drop"
   ) |> 
+  left_join(filter(marktpreise, datum == max(datum))) |>
   mutate(
-    einkaufspreis = kaufwert / stueck,
-    .after = stueck,
-  ) |> 
-  mutate(
-    gewinn_realisiert_absolut = if_else(bestand == 0, verkaufswert - kaufwert -kosten - steuern, NA),
-    gewinn_realisiert_relativ = if_else(bestand == 0, gewinn_realisiert_absolut / kaufwert, NA)
+    realisierung = factor(
+      ifelse(
+        bestand == 0, 
+        "realisiert", 
+        "unrealisiert"
+      ),
+      levels = c("unrealisiert", "realisiert")
+    ),
+    marktwert = stueck * bereingter_schlusskurs,
+    gewinn = if_else(
+      bestand == 0, 
+      verkaufswert - kaufwert -kosten - steuern, 
+      marktwert - kaufwert - kosten - steuern
+    ),
+    rendite = gewinn / (kaufwert + kosten + steuern)
   ) |> 
   select(
-    -bestand
+    portfolioname,
+    tickersymbol,
+    isin,
+    name,
+    wertpapiertyp,
+    gewinn,
+    rendite,
+    realisierung
   ) |> 
-  arrange(desc(gewinn_realisiert_absolut))
+  # Bei Einbuchungen ohne Kaufwert können Inf entstehen
+  filter(is.finite(rendite)) |> 
+  arrange(desc(realisierung), desc(gewinn)) 
 
-print(gewinne)
+print(performance)
 
 
 # diagramme ---------------------------------------------------------------
@@ -209,22 +316,21 @@ diagramme$trades <-
 
 # Gewinne und Verluste
 
-diagramme$gewinne <-  
-  gewinne |> 
-  arrange(desc(gewinn_realisiert_absolut)) |> 
+diagramme$performance <-  
+  performance |> 
+  arrange(desc(realisierung), desc(rendite)) |> 
   mutate(
     name = factor(name, levels = rev(name)),
     ergebnis = case_when(
-      gewinn_realisiert_absolut > 0 ~ "Gewinn",
-      gewinn_realisiert_absolut < 0 ~ "Verlust",
+      gewinn > 0 ~ "Gewinn",
+      gewinn < 0 ~ "Verlust",
       TRUE ~ NA
     )
   ) |> 
-  drop_na() |> 
   ggplot(
     aes(
       x = name,
-      y = gewinn_realisiert_absolut,
+      y = rendite,
       fill = ergebnis
     )
   ) +
@@ -240,10 +346,11 @@ diagramme$gewinne <-
   geom_text(
     aes(
       x = name,
-      y = gewinn_realisiert_absolut + if_else(ergebnis == "Gewinn", 2.5, -2.5),
-      label = percent(
-        gewinn_realisiert_relativ, 
-        accuracy = 1
+      y = rendite + if_else(ergebnis == "Gewinn", 0.01, -0.01),
+      label = number(
+        gewinn, 
+        accuracy = 1,
+        suffix = "€"
       ),
       hjust = if_else(ergebnis == "Gewinn", 0, 1)
     ),
@@ -252,49 +359,33 @@ diagramme$gewinne <-
   geom_text(
     aes(
       x = name,
-      y = if_else(ergebnis == "Gewinn", -2.5, 2.5),
+      y = 0 + if_else(ergebnis == "Gewinn", -0.01, 0.01),
       label = name,
       hjust = if_else(ergebnis == "Gewinn", 1, 0)
     ),
     size = 3
   ) +
   coord_flip() +
-  scale_x_discrete(expand = expansion(add = c(0.75 , 0.75))) +
   scale_y_continuous(
-    labels = label_number(
+    labels = label_percent(
       big.mark = ".",
-      decimal.mark = ",",
-      suffix = "€"
+      decimal.mark = ","
     ),
-    limits = c(
-      -max(abs(gewinne$gewinn_realisiert_absolut), na.rm = TRUE) * 1.1,
-      max(abs(gewinne$gewinn_realisiert_absolut), na.rm = TRUE) *1.1
-    )
+    expand = expansion(c(0.15, 0.15))
   ) +
   labs(
-    title = "Realisierte Gewinne und Verluste",
-    subtitle = if_else(
-      sum(gewinne$gewinn_realisiert_absolut, na.rm = TRUE) > 0,
-      str_glue(
-        "Gesamtgewinn von ",
-        "{number(sum(gewinne$gewinn_realisiert_absolut, na.rm = TRUE), 
-        big.mark = '.', 
-        decimal.mark = ',', 
-        accuracy = 1, 
-        suffix = '€'
-        )}"
-      ),
-      str_glue(
-        "Gesamtverlust von ",
-        "{number(sum(gewinne$gewinn_realisiert_absolut, na.rm = TRUE), 
-        big.mark = '.', 
-        decimal.mark = ',', 
-        accuracy = 1, 
-        suffix = '€'
-        )}"
-      )
-    ),
+    title = "Gewinne und Verluste",
     y = "Gewinn oder Verlust"
+  ) +
+  facet_wrap(
+    ~ realisierung,
+    scales = "free_y",
+    labeller = as_labeller(
+      c(
+       "unrealisiert" = "Unrealisierte Gewinne",
+       "realisiert" = "Realisierte Gewinne"
+      )
+    )
   ) +
   theme_classic() +
   theme(
@@ -302,23 +393,31 @@ diagramme$gewinne <-
     plot.title = element_text(hjust = 0.5),
     plot.subtitle = element_text(hjust = 0.5),
     legend.position = "none",
+    strip.background = element_blank(),
     axis.line.y = element_blank(),
     axis.title.y = element_blank(),
     axis.text.y = element_blank(),
     axis.ticks.y = element_blank(),
-    axis.line.x = element_line(
-      arrow = arrow(length = unit(0.5, "npc"), type = "closed", ends = "both"),
-      color = "black"
-    ),
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor.y = element_blank()
+    axis.line.x = element_line(),
+    panel.grid = element_blank(),
+    panel.border = element_rect(
+      color = "black", 
+      fill = NA, 
+      linewidth = 1
+    )
   )
+
+
+# Rebalancing -------------------------------------------------------------
+
+
+# Outperformance ----------------------------------------------------------
 
 
 # Infografik --------------------------------------------------------------
 
 diagramme$infografik <-
-  diagramme$trades + diagramme$gewinne +
+  (diagramme$trades + plot_spacer()) / diagramme$performance +
   plot_annotation(
     title = "Portfolioanalyse",
     theme = theme(
@@ -330,7 +429,7 @@ diagramme$infografik <-
 # Dateien speichern -------------------------------------------------------
 
 # Plots in einer Schleife speichern und ausführen
-walk2(rev(seq_along(diagramme)), rev(diagramme), function(nummer_diagramm, plot) {
+walk2(seq_along(diagramme), diagramme, function(nummer_diagramm, plot) {
   name_diagramm <- names(diagramme)[nummer_diagramm]
   name_datei <- str_glue("{nummer_diagramm}_{name_diagramm}.png")
   ggsave(
